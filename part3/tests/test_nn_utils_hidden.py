@@ -1,12 +1,19 @@
 """
 Hidden tests for nn_utils - only available on Gradescope.
 """
+
 import numpy
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.clip_grad import clip_grad_norm_
 
-from .adapters import run_softmax, run_cross_entropy, run_gradient_clipping, run_token_accuracy, run_perplexity
+from .adapters import (
+    run_softmax,
+    run_cross_entropy,
+    run_gradient_clipping,
+    run_token_accuracy,
+    run_perplexity,
+)
 
 
 def test_softmax_high_dimensional():

@@ -1,6 +1,7 @@
 """
 Adapters for testing - provides interface between tests and implementation.
 """
+
 import torch
 from torch import Tensor
 
@@ -30,6 +31,7 @@ from model import (
     estimate_memory_bytes,
 )
 
+
 def run_softmax(x: Tensor, dim: int = -1) -> Tensor:
     """Run softmax function."""
     return softmax(x, dim=dim)
@@ -48,13 +50,13 @@ def run_linear(
 ) -> Tensor:
     """
     Run linear transformation with provided weights.
-    
+
     Args:
         d_in: Input dimension
         d_out: Output dimension
         weights: Weight matrix of shape (d_out, d_in)
         in_features: Input tensor of shape (..., d_in)
-    
+
     Returns:
         Output tensor of shape (..., d_out)
     """
@@ -71,13 +73,13 @@ def run_embedding(
 ) -> Tensor:
     """
     Run embedding lookup with provided weights.
-    
+
     Args:
         vocab_size: Vocabulary size
         d_model: Embedding dimension
         weights: Embedding weights of shape (vocab_size, d_model)
         token_ids: Token indices
-    
+
     Returns:
         Embedded tokens
     """
@@ -94,13 +96,13 @@ def run_rmsnorm(
 ) -> Tensor:
     """
     Run RMSNorm with provided weights.
-    
+
     Args:
         d_model: Model dimension
         eps: Epsilon for numerical stability
         weights: Scale weights of shape (d_model,)
         in_features: Input tensor
-    
+
     Returns:
         Normalized tensor
     """
@@ -119,7 +121,7 @@ def run_swiglu(
 ) -> Tensor:
     """
     Run SwiGLU feedforward with provided weights.
-    
+
     Args:
         d_model: Model dimension
         d_ff: Feedforward hidden dimension
@@ -127,7 +129,7 @@ def run_swiglu(
         w2_weight: Down projection weights (d_model, d_ff)
         w3_weight: Up projection weights (d_ff, d_model)
         in_features: Input tensor
-    
+
     Returns:
         Output tensor
     """
@@ -147,14 +149,14 @@ def run_rope(
 ) -> Tensor:
     """
     Run RoPE on query or key tensor.
-    
+
     Args:
         d_model: Head dimension
         theta: RoPE base frequency
         max_seq_len: Maximum sequence length
         in_query_or_key: Input tensor
         token_positions: Position indices
-    
+
     Returns:
         Tensor with RoPE applied
     """
@@ -170,13 +172,13 @@ def run_scaled_dot_product_attention(
 ) -> Tensor:
     """
     Run scaled dot-product attention.
-    
+
     Args:
         Q: Query tensor
         K: Key tensor
         V: Value tensor
         mask: Attention mask
-    
+
     Returns:
         Attention output
     """
@@ -194,7 +196,7 @@ def run_multihead_self_attention(
 ) -> Tensor:
     """
     Run multi-head self-attention with provided weights.
-    
+
     Args:
         d_model: Model dimension
         num_heads: Number of attention heads
@@ -203,7 +205,7 @@ def run_multihead_self_attention(
         v_proj_weight: Value projection weights
         o_proj_weight: Output projection weights
         in_features: Input tensor
-    
+
     Returns:
         Attention output
     """
@@ -229,7 +231,7 @@ def run_multihead_self_attention_with_rope(
 ) -> Tensor:
     """
     Run multi-head self-attention with RoPE.
-    
+
     Args:
         d_model: Model dimension
         num_heads: Number of attention heads
@@ -241,7 +243,7 @@ def run_multihead_self_attention_with_rope(
         o_proj_weight: Output projection weights
         in_features: Input tensor
         token_positions: Position indices
-    
+
     Returns:
         Attention output
     """
@@ -264,7 +266,7 @@ def run_transformer_block(
 ) -> Tensor:
     """
     Run a Transformer block with provided weights.
-    
+
     Args:
         d_model: Model dimension
         num_heads: Number of attention heads
@@ -273,18 +275,18 @@ def run_transformer_block(
         theta: RoPE base frequency
         weights: Dictionary of weights
         in_features: Input tensor
-    
+
     Returns:
         Transformer block output
     """
     block = TransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta)
-    
+
     # Load weights
     if "ln1.weight" in weights:
         block.ln1.weight.data.copy_(weights["ln1.weight"])
     if "ln2.weight" in weights:
         block.ln2.weight.data.copy_(weights["ln2.weight"])
-    
+
     if "attn.q_proj.weight" in weights:
         block.attn.q_proj.weight.data.copy_(weights["attn.q_proj.weight"])
     if "attn.k_proj.weight" in weights:
@@ -293,14 +295,14 @@ def run_transformer_block(
         block.attn.v_proj.weight.data.copy_(weights["attn.v_proj.weight"])
     if "attn.output_proj.weight" in weights:
         block.attn.output_proj.weight.data.copy_(weights["attn.output_proj.weight"])
-    
+
     if "ffn.w1.weight" in weights:
         block.ffn.w1.weight.data.copy_(weights["ffn.w1.weight"])
     if "ffn.w2.weight" in weights:
         block.ffn.w2.weight.data.copy_(weights["ffn.w2.weight"])
     if "ffn.w3.weight" in weights:
         block.ffn.w3.weight.data.copy_(weights["ffn.w3.weight"])
-    
+
     return block(in_features)
 
 
@@ -317,7 +319,7 @@ def run_transformer_lm(
 ) -> Tensor:
     """
     Run a Transformer LM with provided weights.
-    
+
     Args:
         vocab_size: Vocabulary size
         context_length: Maximum context length
@@ -328,7 +330,7 @@ def run_transformer_lm(
         rope_theta: RoPE base frequency
         weights: Dictionary of weights
         in_indices: Input token indices
-    
+
     Returns:
         Logits tensor
     """
@@ -348,6 +350,7 @@ def run_transformer_lm(
 # =============================================================================
 # Transformer Accounting Functions
 # =============================================================================
+
 
 def run_count_parameters(model) -> int:
     """Count the total number of parameters in a model."""

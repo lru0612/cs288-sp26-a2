@@ -2,6 +2,7 @@
 Pytest configuration for the tests package.
 Adds the parent directory to sys.path so tests can import common and tokenizer.
 """
+
 import sys
 from pathlib import Path
 

@@ -2,6 +2,7 @@
 Hidden tests for tokenizer - only available on Gradescope.
 These tests use different strings and edge cases to prevent reverse engineering.
 """
+
 import json
 import os
 
@@ -54,7 +55,7 @@ def test_encode_decode_programming_code():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
+
     test_string = """def fibonacci(n):
     if n <= 1:
         return n
@@ -64,7 +65,7 @@ def test_encode_decode_programming_code():
 for i in range(10):
     print(f"fib({i}) = {fibonacci(i)}")
 """
-    
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -78,9 +79,11 @@ def test_encode_decode_json_content():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
-    test_string = '{"name": "John", "age": 30, "city": "New York", "scores": [95, 87, 92]}'
-    
+
+    test_string = (
+        '{"name": "John", "age": 30, "city": "New York", "scores": [95, 87, 92]}'
+    )
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -94,9 +97,9 @@ def test_encode_decode_mixed_languages():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
+
     test_string = "Hello world! Bonjour le monde! Hola mundo! 你好世界! مرحبا بالعالم"
-    
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -110,9 +113,9 @@ def test_encode_decode_repeated_patterns():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
+
     test_string = "ab" * 100 + " " + "xyz" * 50
-    
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -126,9 +129,11 @@ def test_encode_decode_numbers_and_math():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
-    test_string = "The equation is: E = mc² where c = 299,792,458 m/s and m = 1.67 × 10⁻²⁷ kg"
-    
+
+    test_string = (
+        "The equation is: E = mc² where c = 299,792,458 m/s and m = 1.67 × 10⁻²⁷ kg"
+    )
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -142,9 +147,9 @@ def test_encode_decode_whitespace_variations():
         vocab_path=VOCAB_PATH,
         merges_path=MERGES_PATH,
     )
-    
+
     test_string = "word1  word2   word3\t\ttabbed\n\n\nnewlines    spaces"
-    
+
     reference_ids = reference_tokenizer.encode(test_string)
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
@@ -158,12 +163,12 @@ def test_special_tokens_mid_word():
         merges_path=MERGES_PATH,
         special_tokens=["<|endoftext|>"],
     )
-    
+
     test_string = "word<|endoftext|>another"
     ids = tokenizer.encode(test_string)
     decoded = tokenizer.decode(ids)
     assert decoded == test_string
-    
+
     # Verify the special token is its own token
     tokenized = [tokenizer.decode([x]) for x in ids]
     assert "<|endoftext|>" in tokenized
@@ -176,14 +181,16 @@ def test_encode_iterable_consistency():
         merges_path=MERGES_PATH,
         special_tokens=["<|endoftext|>"],
     )
-    
+
     test_string = "This is a test string that spans multiple lines.\nIt has various content.\nAnd more lines here."
-    
+
     # Encode the full string
     full_ids = tokenizer.encode(test_string)
-    
+
     # Encode via iterable (preserving newlines using splitlines with keepends=True)
-    iterable_ids = list(tokenizer.encode_iterable(test_string.splitlines(keepends=True)))
-    
+    iterable_ids = list(
+        tokenizer.encode_iterable(test_string.splitlines(keepends=True))
+    )
+
     # Results should match when decoded
     assert tokenizer.decode(full_ids) == tokenizer.decode(iterable_ids)

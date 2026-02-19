@@ -19,7 +19,9 @@ def memory_limit(max_mem):
         def wrapper(*args, **kwargs):
             process = psutil.Process(os.getpid())
             prev_limits = resource.getrlimit(resource.RLIMIT_AS)
-            resource.setrlimit(resource.RLIMIT_AS, (process.memory_info().rss + max_mem, -1))
+            resource.setrlimit(
+                resource.RLIMIT_AS, (process.memory_info().rss + max_mem, -1)
+            )
             try:
                 result = f(*args, **kwargs)
                 return result
@@ -235,7 +237,9 @@ def test_unicode_string_with_special_tokens_matches_tiktoken():
     )
     test_string = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>"
 
-    reference_ids = reference_tokenizer.encode(test_string, allowed_special={"<|endoftext|>"})
+    reference_ids = reference_tokenizer.encode(
+        test_string, allowed_special={"<|endoftext|>"}
+    )
     ids = tokenizer.encode(test_string)
     assert ids == reference_ids
 
@@ -338,7 +342,9 @@ def test_tinystories_matches_tiktoken():
     corpus_path = FIXTURES_PATH / "tinystories_sample.txt"
     with open(corpus_path) as f:
         corpus_contents = f.read()
-    reference_ids = reference_tokenizer.encode(corpus_contents, allowed_special={"<|endoftext|>"})
+    reference_ids = reference_tokenizer.encode(
+        corpus_contents, allowed_special={"<|endoftext|>"}
+    )
     ids = tokenizer.encode(corpus_contents)
     assert ids == reference_ids
 
@@ -354,7 +360,9 @@ def test_encode_special_token_trailing_newlines():
     corpus_path = FIXTURES_PATH / "special_token_trailing_newlines.txt"
     with open(corpus_path) as f:
         corpus_contents = f.read()
-    reference_ids = reference_tokenizer.encode(corpus_contents, allowed_special={"<|endoftext|>"})
+    reference_ids = reference_tokenizer.encode(
+        corpus_contents, allowed_special={"<|endoftext|>"}
+    )
     ids = tokenizer.encode(corpus_contents)
     assert ids == reference_ids
 
@@ -370,7 +378,9 @@ def test_encode_special_token_double_newline_non_whitespace():
     corpus_path = FIXTURES_PATH / "special_token_double_newlines_non_whitespace.txt"
     with open(corpus_path) as f:
         corpus_contents = f.read()
-    reference_ids = reference_tokenizer.encode(corpus_contents, allowed_special={"<|endoftext|>"})
+    reference_ids = reference_tokenizer.encode(
+        corpus_contents, allowed_special={"<|endoftext|>"}
+    )
     ids = tokenizer.encode(corpus_contents)
     assert ids == reference_ids
 
@@ -400,7 +410,9 @@ def test_encode_iterable_tinystories_matches_tiktoken():
     corpus_path = FIXTURES_PATH / "tinystories_sample.txt"
     with open(corpus_path) as f:
         corpus_contents = f.read()
-    reference_ids = reference_tokenizer.encode(corpus_contents, allowed_special={"<|endoftext|>"})
+    reference_ids = reference_tokenizer.encode(
+        corpus_contents, allowed_special={"<|endoftext|>"}
+    )
     all_ids = []
     with open(FIXTURES_PATH / "tinystories_sample.txt") as f:
         for _id in tokenizer.encode_iterable(f):
@@ -430,7 +442,9 @@ def test_encode_iterable_memory_usage():
     not sys.platform.startswith("linux"),
     reason="rlimit support for non-linux systems is spotty.",
 )
-@pytest.mark.xfail(reason="Tokenizer.encode is expected to take more memory than allotted (1MB).")
+@pytest.mark.xfail(
+    reason="Tokenizer.encode is expected to take more memory than allotted (1MB)."
+)
 def test_encode_memory_usage():
     """
     We expect this test to fail, since Tokenizer.encode is not expected to be memory efficient.

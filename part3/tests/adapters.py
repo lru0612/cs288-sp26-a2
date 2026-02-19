@@ -1,6 +1,7 @@
 """
 Adapters for testing - provides interface between tests and implementation.
 """
+
 import torch
 from torch import Tensor
 
@@ -11,7 +12,13 @@ from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
-from nn_utils import softmax, cross_entropy, gradient_clipping, token_accuracy, perplexity
+from nn_utils import (
+    softmax,
+    cross_entropy,
+    gradient_clipping,
+    token_accuracy,
+    perplexity,
+)
 
 
 def run_softmax(x: Tensor, dim: int = -1) -> Tensor:
@@ -29,7 +36,9 @@ def run_gradient_clipping(parameters, max_norm: float) -> Tensor:
     return gradient_clipping(parameters, max_norm)
 
 
-def run_token_accuracy(logits: Tensor, targets: Tensor, ignore_index: int = -100) -> Tensor:
+def run_token_accuracy(
+    logits: Tensor, targets: Tensor, ignore_index: int = -100
+) -> Tensor:
     """Run token accuracy implementation."""
     return token_accuracy(logits, targets, ignore_index)
 

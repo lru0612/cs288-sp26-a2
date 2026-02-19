@@ -1,6 +1,7 @@
 """
 Pytest configuration and fixtures for Part 2 tests.
 """
+
 import sys
 from pathlib import Path
 
@@ -18,26 +19,27 @@ class NumpySnapshot:
     Simple snapshot testing utility for numpy arrays.
     Stores expected values and compares against actual outputs.
     """
+
     def __init__(self, request, snapshots_dir):
         self.test_name = request.node.name
         self.snapshots_dir = snapshots_dir
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
-        
+
     def _get_snapshot_path(self):
         return self.snapshots_dir / f"{self.test_name}.npy"
-    
+
     def assert_match(self, actual, atol=1e-6, rtol=1e-5):
         """Assert that actual matches the stored snapshot."""
         if isinstance(actual, torch.Tensor):
             actual = actual.detach().cpu().numpy()
-        
+
         snapshot_path = self._get_snapshot_path()
-        
+
         if not snapshot_path.exists():
             # Create new snapshot
             np.save(snapshot_path, actual)
             pytest.skip(f"Created new snapshot at {snapshot_path}")
-        
+
         expected = np.load(snapshot_path)
         np.testing.assert_allclose(actual, expected, atol=atol, rtol=rtol)
 
@@ -177,37 +179,45 @@ def ts_state_dict(d_model, d_ff, n_heads, n_layers, vocab_size):
     Returns tuple of (state_dict, config).
     """
     torch.manual_seed(42)
-    
+
     state_dict = {}
-    
+
     # Token embeddings
     state_dict["token_embeddings.weight"] = torch.randn(vocab_size, d_model) * 0.02
-    
+
     # Output layer (tied with embeddings or separate)
     state_dict["output.weight"] = torch.randn(vocab_size, d_model) * 0.02
-    
+
     # Final layer norm
     state_dict["final_ln.weight"] = torch.ones(d_model)
-    
+
     # Per-layer weights
     for layer_idx in range(n_layers):
         prefix = f"layers.{layer_idx}"
-        
+
         # Attention layer norms
         state_dict[f"{prefix}.ln1.weight"] = torch.ones(d_model)
         state_dict[f"{prefix}.ln2.weight"] = torch.ones(d_model)
-        
+
         # Attention projections
-        state_dict[f"{prefix}.attn.q_proj.weight"] = torch.randn(d_model, d_model) * 0.02
-        state_dict[f"{prefix}.attn.k_proj.weight"] = torch.randn(d_model, d_model) * 0.02
-        state_dict[f"{prefix}.attn.v_proj.weight"] = torch.randn(d_model, d_model) * 0.02
-        state_dict[f"{prefix}.attn.output_proj.weight"] = torch.randn(d_model, d_model) * 0.02
-        
+        state_dict[f"{prefix}.attn.q_proj.weight"] = (
+            torch.randn(d_model, d_model) * 0.02
+        )
+        state_dict[f"{prefix}.attn.k_proj.weight"] = (
+            torch.randn(d_model, d_model) * 0.02
+        )
+        state_dict[f"{prefix}.attn.v_proj.weight"] = (
+            torch.randn(d_model, d_model) * 0.02
+        )
+        state_dict[f"{prefix}.attn.output_proj.weight"] = (
+            torch.randn(d_model, d_model) * 0.02
+        )
+
         # FFN weights (SwiGLU uses w1, w2, w3)
         state_dict[f"{prefix}.ffn.w1.weight"] = torch.randn(d_ff, d_model) * 0.02
         state_dict[f"{prefix}.ffn.w2.weight"] = torch.randn(d_model, d_ff) * 0.02
         state_dict[f"{prefix}.ffn.w3.weight"] = torch.randn(d_ff, d_model) * 0.02
-    
+
     config = {
         "d_model": d_model,
         "d_ff": d_ff,
@@ -215,5 +225,5 @@ def ts_state_dict(d_model, d_ff, n_heads, n_layers, vocab_size):
         "n_layers": n_layers,
         "vocab_size": vocab_size,
     }
-    
+
     return state_dict, config

@@ -3,26 +3,34 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.clip_grad import clip_grad_norm_
 
-from .adapters import run_softmax, run_cross_entropy, run_gradient_clipping, run_token_accuracy, run_perplexity
+from .adapters import (
+    run_softmax,
+    run_cross_entropy,
+    run_gradient_clipping,
+    run_token_accuracy,
+    run_perplexity,
+)
 
 
 def test_softmax_matches_pytorch():
     """Test that our softmax implementation matches PyTorch's."""
-    x = torch.tensor([
-        [1.0, 2.0, 3.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 0.0, 1.0],
-    ])
-    
+    x = torch.tensor(
+        [
+            [1.0, 2.0, 3.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, 0.0, 1.0],
+        ]
+    )
+
     expected_output = F.softmax(x, dim=-1)
     actual_output = run_softmax(x, dim=-1)
-    
+
     numpy.testing.assert_allclose(
         actual_output.detach().numpy(),
         expected_output.detach().numpy(),
         atol=1e-6,
     )
-    
+
     # Test that softmax handles numerical overflow issues
     numpy.testing.assert_allclose(
         run_softmax(x + 100, dim=-1).detach().numpy(),
@@ -51,16 +59,24 @@ def test_cross_entropy():
     targets = torch.tensor([[1, 0, 2, 2], [4, 1, 4, 0]])
     expected = F.cross_entropy(inputs.view(-1, inputs.size(-1)), targets.view(-1))
     numpy.testing.assert_allclose(
-        run_cross_entropy(inputs.view(-1, inputs.size(-1)), targets.view(-1)).detach().numpy(),
+        run_cross_entropy(inputs.view(-1, inputs.size(-1)), targets.view(-1))
+        .detach()
+        .numpy(),
         expected.detach().numpy(),
         atol=1e-4,
     )
 
     # Test that cross-entropy handles numerical overflow issues
     large_inputs = 1000.0 * inputs
-    large_expected_cross_entropy = F.cross_entropy(large_inputs.view(-1, large_inputs.size(-1)), targets.view(-1))
+    large_expected_cross_entropy = F.cross_entropy(
+        large_inputs.view(-1, large_inputs.size(-1)), targets.view(-1)
+    )
     numpy.testing.assert_allclose(
-        run_cross_entropy(large_inputs.view(-1, large_inputs.size(-1)), targets.view(-1)).detach().numpy(),
+        run_cross_entropy(
+            large_inputs.view(-1, large_inputs.size(-1)), targets.view(-1)
+        )
+        .detach()
+        .numpy(),
         large_expected_cross_entropy.detach().numpy(),
         atol=1e-4,
     )
@@ -99,26 +115,30 @@ def test_gradient_clipping():
 def test_token_accuracy_all_correct():
     """Test token accuracy when all predictions are correct."""
     # Logits where argmax matches targets exactly
-    logits = torch.tensor([
-        [2.0, 1.0, 0.5],  # argmax = 0
-        [0.1, 3.0, 0.2],  # argmax = 1
-        [1.0, 0.5, 2.5],  # argmax = 2
-    ])
+    logits = torch.tensor(
+        [
+            [2.0, 1.0, 0.5],  # argmax = 0
+            [0.1, 3.0, 0.2],  # argmax = 1
+            [1.0, 0.5, 2.5],  # argmax = 2
+        ]
+    )
     targets = torch.tensor([0, 1, 2])
-    
+
     accuracy = run_token_accuracy(logits, targets)
     numpy.testing.assert_allclose(accuracy.item(), 1.0, atol=1e-6)
 
 
 def test_token_accuracy_partial_correct():
     """Test token accuracy with some incorrect predictions."""
-    logits = torch.tensor([
-        [2.0, 1.0],  # argmax = 0, target = 1 (wrong)
-        [0.1, 3.0],  # argmax = 1, target = 1 (correct)
-        [1.0, 0.5],  # argmax = 0, target = 0 (correct)
-    ])
+    logits = torch.tensor(
+        [
+            [2.0, 1.0],  # argmax = 0, target = 1 (wrong)
+            [0.1, 3.0],  # argmax = 1, target = 1 (correct)
+            [1.0, 0.5],  # argmax = 0, target = 0 (correct)
+        ]
+    )
     targets = torch.tensor([1, 1, 0])
-    
+
     accuracy = run_token_accuracy(logits, targets)
     # 2 out of 3 correct = 0.6667
     numpy.testing.assert_allclose(accuracy.item(), 2.0 / 3.0, atol=1e-4)
@@ -126,14 +146,16 @@ def test_token_accuracy_partial_correct():
 
 def test_token_accuracy_with_ignore_index():
     """Test token accuracy ignores positions with ignore_index."""
-    logits = torch.tensor([
-        [2.0, 1.0],  # argmax = 0, target = 0 (correct)
-        [0.1, 3.0],  # argmax = 1, target = -100 (ignored)
-        [1.0, 0.5],  # argmax = 0, target = 1 (wrong)
-        [0.5, 2.0],  # argmax = 1, target = 1 (correct)
-    ])
+    logits = torch.tensor(
+        [
+            [2.0, 1.0],  # argmax = 0, target = 0 (correct)
+            [0.1, 3.0],  # argmax = 1, target = -100 (ignored)
+            [1.0, 0.5],  # argmax = 0, target = 1 (wrong)
+            [0.5, 2.0],  # argmax = 1, target = 1 (correct)
+        ]
+    )
     targets = torch.tensor([0, -100, 1, 1])
-    
+
     accuracy = run_token_accuracy(logits, targets, ignore_index=-100)
     # Only 3 valid tokens, 2 correct = 0.6667
     numpy.testing.assert_allclose(accuracy.item(), 2.0 / 3.0, atol=1e-4)
@@ -141,12 +163,14 @@ def test_token_accuracy_with_ignore_index():
 
 def test_token_accuracy_all_wrong():
     """Test token accuracy when all predictions are wrong."""
-    logits = torch.tensor([
-        [2.0, 1.0],  # argmax = 0
-        [0.1, 3.0],  # argmax = 1
-    ])
+    logits = torch.tensor(
+        [
+            [2.0, 1.0],  # argmax = 0
+            [0.1, 3.0],  # argmax = 1
+        ]
+    )
     targets = torch.tensor([1, 0])  # Opposite of predictions
-    
+
     accuracy = run_token_accuracy(logits, targets)
     numpy.testing.assert_allclose(accuracy.item(), 0.0, atol=1e-6)
 
@@ -154,13 +178,15 @@ def test_token_accuracy_all_wrong():
 def test_perplexity_near_perfect():
     """Test perplexity with near-perfect predictions (should be close to 1)."""
     # High confidence correct predictions
-    logits = torch.tensor([
-        [10.0, 0.0, 0.0],  # Confident prediction of class 0
-        [0.0, 10.0, 0.0],  # Confident prediction of class 1
-        [0.0, 0.0, 10.0],  # Confident prediction of class 2
-    ])
+    logits = torch.tensor(
+        [
+            [10.0, 0.0, 0.0],  # Confident prediction of class 0
+            [0.0, 10.0, 0.0],  # Confident prediction of class 1
+            [0.0, 0.0, 10.0],  # Confident prediction of class 2
+        ]
+    )
     targets = torch.tensor([0, 1, 2])
-    
+
     ppl = run_perplexity(logits, targets)
     # Should be very close to 1.0 (perfect prediction)
     assert ppl.item() < 1.1, f"Expected perplexity close to 1, got {ppl.item()}"
@@ -169,13 +195,15 @@ def test_perplexity_near_perfect():
 def test_perplexity_uniform():
     """Test perplexity with uniform predictions (maximum uncertainty)."""
     # Uniform distribution over 3 classes
-    logits = torch.tensor([
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
-    ])
+    logits = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
     targets = torch.tensor([0, 1, 2])
-    
+
     ppl = run_perplexity(logits, targets)
     # Uniform over 3 classes should give perplexity = 3
     numpy.testing.assert_allclose(ppl.item(), 3.0, atol=1e-4)
@@ -184,13 +212,15 @@ def test_perplexity_uniform():
 def test_perplexity_with_ignore_index():
     """Test perplexity ignores positions with ignore_index."""
     # Mix of confident and ignored positions
-    logits = torch.tensor([
-        [10.0, 0.0],  # Confident correct
-        [0.0, 0.0],   # Uniform (will be ignored)
-        [10.0, 0.0],  # Confident correct
-    ])
+    logits = torch.tensor(
+        [
+            [10.0, 0.0],  # Confident correct
+            [0.0, 0.0],  # Uniform (will be ignored)
+            [10.0, 0.0],  # Confident correct
+        ]
+    )
     targets = torch.tensor([0, -100, 0])
-    
+
     ppl = run_perplexity(logits, targets, ignore_index=-100)
     # Only considers the confident predictions, should be close to 1
     assert ppl.item() < 1.1, f"Expected perplexity close to 1, got {ppl.item()}"
@@ -198,16 +228,18 @@ def test_perplexity_with_ignore_index():
 
 def test_perplexity_matches_exp_cross_entropy():
     """Test that perplexity equals exp(cross_entropy)."""
-    logits = torch.tensor([
-        [1.5, 0.8, 0.3],
-        [0.2, 2.1, 0.9],
-        [0.7, 0.4, 1.8],
-        [1.2, 1.1, 0.6],
-    ])
+    logits = torch.tensor(
+        [
+            [1.5, 0.8, 0.3],
+            [0.2, 2.1, 0.9],
+            [0.7, 0.4, 1.8],
+            [1.2, 1.1, 0.6],
+        ]
+    )
     targets = torch.tensor([0, 1, 2, 0])
-    
+
     ppl = run_perplexity(logits, targets)
     ce_loss = F.cross_entropy(logits, targets)
     expected_ppl = torch.exp(ce_loss)
-    
+
     numpy.testing.assert_allclose(ppl.item(), expected_ppl.item(), atol=1e-4)

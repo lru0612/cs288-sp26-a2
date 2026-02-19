@@ -138,8 +138,8 @@ data/
 raw_data/
 
 # Keep fixture files
-!part*/fixtures/*.txt
-!part*/fixtures/*.json
+# !part*/fixtures/*.txt
+# !part*/fixtures/*.json
 
 # -----------------------------------------------------------------------------
 # Hidden test files (only on autograder)
@@ -160,4 +160,7 @@ secrets.yaml
 credentials.json
 part4/fixtures/tinystories_100k.txt
 part4/fixtures/tinystories_full.txt
+part4/fixtures/tinystories_100k_val.txt
+part4/fixtures/*.token_cache.pkl
+part4/models/
 submission.zip
