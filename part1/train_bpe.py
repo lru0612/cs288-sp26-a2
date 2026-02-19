@@ -213,10 +213,13 @@ def train_bpe(
         if flag:
             continue
         word_count[tuple(bytes([b]) for b in token_bytes)] += 1
-    pair_count = Counter()
+    pair_count: Counter = Counter()
+    pair_to_words: dict[tuple[bytes, bytes], set[tuple[bytes, ...]]] = {}
     for word, count in word_count.items():
-        for i in get_pairs_tuple(word):
-            pair_count[i] += count
+        for pair in get_pairs_tuple(word):
+            pair_count[pair] += count
+            pair_to_words.setdefault(pair, set()).add(word)
+
     merges = []
     while len(vocab) < vocab_size:
         if not pair_count:
@@ -227,17 +230,28 @@ def train_bpe(
         best_pair = max(pair_count, key=lambda p: (pair_count[p], p))
         vocab[len(vocab)] = best_pair[0] + best_pair[1]
         merges.append(best_pair)
-        new_word_count = Counter()
-        for word, count in word_count.items():
-            if best_pair in get_pairs_tuple(word):
-                old_word_pair_tuple = get_pairs_tuple(word)
-                for pair in old_word_pair_tuple:
-                    pair_count[pair] -= count
-                word = merge_word(word, best_pair)
-                new_word_pair_tuple = get_pairs_tuple(word)
-                for pair in new_word_pair_tuple:
-                    pair_count[pair] += count
-            new_word_count[word] += count
-        word_count = new_word_count
+        affected_words = pair_to_words.pop(best_pair, set())
+        del pair_count[best_pair]
+
+        for word in affected_words:
+            count = word_count.pop(word)
+
+            for pair in get_pairs_tuple(word):
+                if pair == best_pair:
+                    continue  
+                pair_count[pair] -= count
+                if pair_count[pair] <= 0:
+                    del pair_count[pair]
+                if pair in pair_to_words:
+                    pair_to_words[pair].discard(word)
+                    if not pair_to_words[pair]:
+                        del pair_to_words[pair]
+
+            new_word = merge_word(word, best_pair)
+            word_count[new_word] += count
+
+            for pair in get_pairs_tuple(new_word):
+                pair_count[pair] += count
+                pair_to_words.setdefault(pair, set()).add(new_word)
 
     return vocab, merges

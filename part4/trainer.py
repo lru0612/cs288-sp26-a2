@@ -83,7 +83,8 @@ class Trainer:
             self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_steps)
         self.global_step = 0
         self.best_val_loss = float("inf")
-        self.epochs_no_improve = 0   
+        self.steps_no_improve = 0   
+        self._stop_training = False  
         self.train_losses = []
         self.val_losses = []
         self.scaler = GradScaler("cuda", enabled=config.use_amp)
@@ -141,7 +142,23 @@ class Trainer:
                 )
                 if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
                     wandb.log({"val/loss": val_loss}, step=self.global_step)
-                self.model.train()  
+                self.model.train()
+
+                if self.config.patience is not None:
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self.steps_no_improve = 0
+                    else:
+                        self.steps_no_improve += self.config.val_per_steps
+                        if self.steps_no_improve >= self.config.patience:
+                            tqdm.write(
+                                f"\n[Early Stopping] No improvement for "
+                                f"{self.steps_no_improve} steps "
+                                f"(patience={self.config.patience}). "
+                                f"Stopping at step {self.global_step}."
+                            )
+                            self._stop_training = True
+                            break  
 
         return total_loss / num_batches if num_batches > 0 else 0.0
 
@@ -167,24 +184,18 @@ class Trainer:
 
             epoch_log: Dict[str, Any] = {"train/epoch_loss": train_loss, "epoch": epoch + 1}
 
-            if self.val_dataloader:
+            if self.val_dataloader and self.config.val_per_steps is None:
                 val_loss = self.evaluate()
                 self.val_losses.append(val_loss)
                 epoch_log["val/loss"] = val_loss
 
-                if self.config.patience is not None:
-                    if val_loss < self.best_val_loss:
-                        self.best_val_loss = val_loss
-                        self.epochs_no_improve = 0
-                    else:
-                        self.epochs_no_improve += 1
-                        if self.epochs_no_improve >= self.config.patience:
-                            if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
-                                wandb.log(epoch_log, step=self.global_step)
-                            break
-
             if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
                 wandb.log(epoch_log, step=self.global_step)
+
+            # 检查 step 级早停是否已触发
+            if self._stop_training:
+                tqdm.write(f"[Early Stopping] Training stopped at epoch {epoch + 1}.")
+                break
 
         return {"train_losses": self.train_losses, "val_losses": self.val_losses}
 

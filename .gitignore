@@ -158,9 +158,7 @@ raw_data/
 .env.*.local
 secrets.yaml
 credentials.json
-part4/fixtures/tinystories_100k.txt
-part4/fixtures/tinystories_full.txt
-part4/fixtures/tinystories_100k_val.txt
+part4/fixtures/*.txt
 part4/fixtures/*.token_cache.pkl
 part4/models/
 submission.zip

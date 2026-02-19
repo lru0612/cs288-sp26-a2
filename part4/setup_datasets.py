@@ -4,12 +4,15 @@ Download and prepare datasets for Part 4.
 
 Datasets:
 - TinyStories: ~2.1M short children's stories for pretraining
+- Wikipedia (20220301.en): English Wikipedia articles for pretraining
 - SQuAD v1.1: ~100k QA examples for fine-tuning
 
 Usage:
-    python part4/setup_datasets.py
+    python part4/setup_datasets.py                  # Download all datasets
+    python part4/setup_datasets.py --no-wikipedia   # Skip Wikipedia
 """
 
+import argparse
 import json
 import os
 import sys
@@ -84,6 +87,74 @@ def download_tinystories():
     print(f"Also created 100k val   subset : {subset_val_path}  (5k stories)")
 
     return output_path
+
+
+def download_wikipedia(
+    num_train: int = 100000,
+    num_val: int = 5000,
+    language: str = "20231101.en",
+):
+    """
+    Download Wikipedia dataset for pretraining.
+
+    Args:
+        num_train: Number of articles to use for training
+        num_val:   Number of articles to use for validation
+        language:  Wikipedia dump version (default: 20220301.en)
+
+    Returns:
+        (train_path, val_path)
+    """
+    print("\n" + "=" * 60)
+    print(f"Downloading Wikipedia ({language}) dataset...")
+    print("=" * 60)
+
+    train_path = FIXTURES_DIR / f"wikipedia_{num_train // 1000}k.txt"
+    val_path   = FIXTURES_DIR / f"wikipedia_{num_train // 1000}k_val.txt"
+
+    if train_path.exists() and val_path.exists():
+        train_mb = train_path.stat().st_size / (1024 * 1024)
+        val_mb   = val_path.stat().st_size / (1024 * 1024)
+        print(f"Found existing files, skipping download.")
+        print(f"  Train: {train_path}  ({train_mb:.1f} MB)")
+        print(f"  Val:   {val_path}  ({val_mb:.1f} MB)")
+        return train_path, val_path
+
+    dataset = load_dataset("wikimedia/wikipedia", language, split="train")
+    total = len(dataset)
+    need  = num_train + num_val
+    print(f"Total Wikipedia articles: {total:,}")
+    print(f"Using: {num_train:,} train + {num_val:,} val = {need:,} articles")
+
+    if need > total:
+        raise ValueError(
+            f"Requested {need:,} articles but dataset only has {total:,}."
+        )
+
+    with open(train_path, "w", encoding="utf-8") as f_train, \
+         open(val_path,   "w", encoding="utf-8") as f_val:
+        for i, example in enumerate(dataset):
+            if i >= need:
+                break
+            article = example["text"].strip()
+            if not article:
+                continue
+            text = article + "\n<|endoftext|>\n"
+            if i < num_train:
+                f_train.write(text)
+            else:
+                f_val.write(text)
+
+            if (i + 1) % 10000 == 0:
+                print(f"  Processed {i + 1:,} articles...")
+
+    train_mb = train_path.stat().st_size / (1024 * 1024)
+    val_mb   = val_path.stat().st_size / (1024 * 1024)
+    print(f"\nSaved:")
+    print(f"  Train: {train_path}  ({train_mb:.1f} MB, {num_train:,} articles)")
+    print(f"  Val:   {val_path}  ({val_mb:.1f} MB, {num_val:,} articles)")
+
+    return train_path, val_path
 
 
 def download_squad():
@@ -218,12 +289,35 @@ def download_squad():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="CS288 Part 4 - Dataset Setup")
+    parser.add_argument(
+        "--no-wikipedia", action="store_true",
+        help="Skip downloading Wikipedia (saves time/disk space)"
+    )
+    parser.add_argument(
+        "--wiki-train", type=int, default=100000,
+        help="Number of Wikipedia articles for training (default: 100000)"
+    )
+    parser.add_argument(
+        "--wiki-val", type=int, default=1000,
+        help="Number of Wikipedia articles for validation (default: 5000)"
+    )
+    args = parser.parse_args()
+
     print("\n" + "=" * 60)
     print("CS288 Part 4 - Dataset Setup")
     print("=" * 60 + "\n")
 
     # Download TinyStories
     tinystories_path = download_tinystories()
+
+    # Download Wikipedia (optional)
+    wikipedia_paths = None
+    if not args.no_wikipedia:
+        wikipedia_paths = download_wikipedia(
+            num_train=args.wiki_train,
+            num_val=args.wiki_val,
+        )
 
     # Download SQuAD
     squad_paths = download_squad()
@@ -233,9 +327,14 @@ def main():
     print("=" * 60)
     print("\nDatasets ready in:", FIXTURES_DIR)
     print("\nRecommended usage:")
-    print(
-        "  - Pretraining: tinystories_full.txt (full) or tinystories_100k.txt (quick)"
-    )
+    print("  - Pretraining (TinyStories only):  tinystories_100k.txt")
+    if wikipedia_paths:
+        print(f"  - Pretraining (Wikipedia only):    {wikipedia_paths[0].name}")
+        print("  - Pretraining (Mixed):             use MixedPretrainingDataset")
+        print("    e.g. MixedPretrainingDataset(")
+        print("           tinystories_path='fixtures/tinystories_100k.txt',")
+        print(f"           wikipedia_path='fixtures/{wikipedia_paths[0].name}',")
+        print("           tinystories_weight=0.7, wikipedia_weight=0.3)")
     print("  - Fine-tuning: squad_train.json (10k examples)")
     print("  - Validation:  squad_dev.json (2k examples)")
     print("  - Testing:     squad_test.json (1k examples)")
