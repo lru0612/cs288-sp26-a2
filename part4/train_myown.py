@@ -68,14 +68,15 @@ CONFIGS = {
         "num_heads": 16,
         "d_ff": 2048,
         "context_length": 512,
-        "pretrain_epochs": 5,
-        "finetune_epochs": 15,
-        "batch_size": 16,
-        "val_per_steps": 200,
-        "pretrain_patience": 2000,   
-        "finetune_val_per_steps": 50,  
-        "finetune_patience": 500,      
-        "lr": 1e-4,
+        "pretrain_epochs": 4,
+        "finetune_epochs": 5,
+        "pretrain_batch_size": 32,
+        "finetune_batch_size": 8,
+        "val_per_steps": 1000,
+        "pretrain_patience": 5000,   
+        "finetune_val_per_steps": 200,  
+        "finetune_patience": 1000,      
+        "lr": 2e-4,
     }
 
 
@@ -219,7 +220,7 @@ def pretrain_lm(
 
     # Create dataloaders
     _dl_kwargs = dict(
-        batch_size=config["batch_size"],
+        batch_size=config["pretrain_batch_size"],
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
@@ -268,8 +269,9 @@ def pretrain_lm(
         log_interval=max(1, len(dataloader) // 5),
         use_amp=device == "cuda",
         val_per_steps=config["val_per_steps"],
-        patience=config.get("pretrain_patience"),  # step 级早停，None 表示不启用
+        patience=config.get("pretrain_patience"),
         use_wandb=use_wandb,
+        task="pretrain",
     )
 
     # Train
@@ -351,7 +353,7 @@ def evaluate_prompting(
         template=template,
         device=device,
         few_shot_pool=few_shot_pool,
-        k=2,                  
+        k=0,                  
         context_max_chars=200, 
         max_input_tokens=490, 
         seed=42,
@@ -416,7 +418,7 @@ def finetune_qa(
 
     _qa_dl_kwargs = dict(
         tokenizer=tokenizer,
-        batch_size=config["batch_size"],
+        batch_size=config["finetune_batch_size"],
         max_length=config["context_length"],
         num_choices=4,
     )
@@ -435,7 +437,7 @@ def finetune_qa(
     # Training config
     train_config = TrainingConfig(
         num_epochs=config["finetune_epochs"],
-        learning_rate=config["lr"] / 2,  # Lower LR for fine-tuning
+        learning_rate=config["lr"] / 20,  # Lower LR for fine-tuning
         weight_decay=0.01,
         warmup_steps=min(50, len(train_dataloader) // 5),
         max_grad_norm=1.0,
@@ -443,8 +445,9 @@ def finetune_qa(
         log_interval=max(1, len(train_dataloader) // 5),
         use_amp=device == "cuda",
         val_per_steps=config.get("finetune_val_per_steps"),
-        patience=config.get("finetune_patience"),  # step 级早停
+        patience=config.get("finetune_patience"),
         use_wandb=use_wandb,
+        task="united_finetune",
     )
 
     # Train
@@ -503,7 +506,7 @@ def evaluate_finetuned(
     dev_dataloader = create_qa_dataloader(
         data=dev_data,
         tokenizer=tokenizer,
-        batch_size=config["batch_size"],
+        batch_size=config["finetune_batch_size"],
         max_length=config["context_length"],
         num_choices=4,
         shuffle=False,
@@ -577,14 +580,42 @@ def main():
     bpe_data = config.get("bpe_data", config["pretrain_data"])
     tokenizer, vocab, merges = train_tokenizer(bpe_data, config["vocab_size"])
 
+    pretrained_model_path = Path(__file__).parent / "checkpoints/best_model_55000.pt"
     # Step 2: Pretrain LM
-    pretrained_model = pretrain_lm(tokenizer, config, device, use_wandb=use_wandb)
+    if pretrained_model_path.exists():
+        pretrained_model = TransformerLM(
+            vocab_size=len(tokenizer.vocab),
+            context_length=config["context_length"],
+            d_model=config["d_model"],
+            num_layers=config["num_layers"],
+            num_heads=config["num_heads"],
+            d_ff=config["d_ff"],
+        ).to(device)
+        pretrained_model.load_state_dict(torch.load(pretrained_model_path))
+    else:
+        pretrained_model = pretrain_lm(tokenizer, config, device, use_wandb=use_wandb)
+        
 
     if device == "cuda":
         torch.cuda.empty_cache()
 
     # Step 3: Fine-tune for QA
-    qa_model = finetune_qa(pretrained_model, tokenizer, config, device, use_wandb=use_wandb)
+    finetune_model_path = Path(__file__).parent / "checkpoints/20260221_055426_alpha0.5/united_finetune_best_model_3600.pt"
+    #finetune_model_path = None
+    if finetune_model_path is not None and finetune_model_path.exists():
+        qa_model = TransformerForMultipleChoice(
+            transformer_lm=pretrained_model,
+            hidden_size=pretrained_model.d_model,
+            num_choices=4,
+            pooling="last",
+            freeze_backbone=False,
+        ).to(device)
+        state_dict = torch.load(finetune_model_path, map_location=device)
+        qa_model.load_state_dict(state_dict)
+        qa_model.eval()
+        print(f"Fine-tuned model loaded! ({sum(p.numel() for p in qa_model.parameters()):,} params)")
+    else:
+        qa_model = finetune_qa(pretrained_model, tokenizer, config, device, use_wandb=use_wandb)
 
     # Step 4: Evaluate prompting on fine-tuned model
     # Use the fine-tuned backbone (qa_model.transformer) for prompting

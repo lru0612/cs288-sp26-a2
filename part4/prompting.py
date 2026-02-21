@@ -162,7 +162,7 @@ class FewShotPromptingPipeline(PromptingPipeline):
         samples = self._rng.sample(
             self.few_shot_pool, min(self.k, len(self.few_shot_pool))
         )
-        return "Here are some examples you can refer to:\n\n" + "\n\n".join(self._format_example(ex) for ex in samples) + "\n\n"
+        return "\n\n".join(self._format_example(ex) for ex in samples) + "\n\n"
 
     @torch.no_grad()
     def predict_single(

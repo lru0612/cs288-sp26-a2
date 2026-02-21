@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 import time
 import sys
+import os
 from tqdm import tqdm
 
 try:
@@ -38,12 +39,14 @@ class TrainingConfig:
     batch_size: int = 8
     log_interval: int = 10
     save_interval: int = 500
-    checkpoint_dir: Optional[str] = None
+    checkpoint_dir: Optional[str] = "checkpoints"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp: bool = False
     patience: Optional[int] = None
     use_wandb: bool = False
-    val_per_steps: Optional[int] = None  
+    val_per_steps: Optional[int] = None 
+    prompt_alpha: float = 0.8
+    task: str = "pretrain"  
 
 
 class Trainer:
@@ -88,6 +91,15 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.scaler = GradScaler("cuda", enabled=config.use_amp)
+        if config.checkpoint_dir is not None:
+            self._ckpt_dir = Path(config.checkpoint_dir)
+            self._ckpt_dir.mkdir(parents=True, exist_ok=True)
+            self._best_ckpt_path = self._ckpt_dir / time.strftime("%Y%m%d_%H%M%S")
+            os.makedirs(self._best_ckpt_path, exist_ok=True)
+        else:
+            self._ckpt_dir = None
+            self._best_ckpt_path = None
+        self._last_best_ckpt_file = None
 
     def _default_lm_loss(
         self, batch: Dict[str, torch.Tensor], model: nn.Module
@@ -106,7 +118,22 @@ class Trainer:
         for batch in pbar:
             self.optimizer.zero_grad(set_to_none=True)
             with autocast("cuda", enabled=self.config.use_amp):
-                loss = self.compute_loss_fn(batch, self.model)
+                if "united" in self.config.task:
+                    classification_loss, prompting_loss = self.compute_loss_fn(batch, self.model)
+                    loss = self.config.prompt_alpha * prompting_loss + (1 - self.config.prompt_alpha) * classification_loss
+                    if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
+                        try:
+                            wandb.log(
+                                {
+                                    f"{self.config.task}/cls_loss": classification_loss.item(),
+                                    f"{self.config.task}/prompt_loss": prompting_loss.item(),
+                                },
+                                step=self.global_step,
+                            )
+                        except Exception as e:
+                            tqdm.write(f"[wandb] log failed (step {self.global_step}): {e}")
+                else:
+                    loss = self.compute_loss_fn(batch, self.model)
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
             gradient_clipping(self.model.parameters(), self.config.max_grad_norm)
@@ -119,14 +146,18 @@ class Trainer:
             pbar.set_postfix(loss=f"{loss.item():.4f}", step=self.global_step)
 
             if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
-                current_lr = self.scheduler.get_last_lr()[0]
-                wandb.log(
-                    {
-                        "train/step_loss": loss.item(),
-                        "train/lr": current_lr,
-                    },
-                    step=self.global_step,
-                )
+                try:
+                    task = self.config.task
+                    current_lr = self.scheduler.get_last_lr()[0]
+                    wandb.log(
+                        {
+                            f"{task}/step_loss": loss.item(),
+                            f"{task}/lr": current_lr,
+                        },
+                        step=self.global_step,
+                    )
+                except Exception as e:
+                    tqdm.write(f"[wandb] log failed (step {self.global_step}): {e}")
 
             if (
                 self.config.val_per_steps is not None
@@ -141,24 +172,27 @@ class Trainer:
                     step=self.global_step,
                 )
                 if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
-                    wandb.log({"val/loss": val_loss}, step=self.global_step)
+                    try:
+                        task = self.config.task
+                        wandb.log({f"{task}/val_loss": val_loss}, step=self.global_step)
+                    except Exception as e:
+                        tqdm.write(f"[wandb] val log failed: {e}")
                 self.model.train()
 
-                if self.config.patience is not None:
-                    if val_loss < self.best_val_loss:
-                        self.best_val_loss = val_loss
-                        self.steps_no_improve = 0
-                    else:
-                        self.steps_no_improve += self.config.val_per_steps
-                        if self.steps_no_improve >= self.config.patience:
-                            tqdm.write(
-                                f"\n[Early Stopping] No improvement for "
-                                f"{self.steps_no_improve} steps "
-                                f"(patience={self.config.patience}). "
-                                f"Stopping at step {self.global_step}."
-                            )
-                            self._stop_training = True
-                            break  
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.steps_no_improve = 0
+                    if self._best_ckpt_path is not None:
+                        if self._last_best_ckpt_file is not None and self._last_best_ckpt_file.exists():
+                            self._last_best_ckpt_file.unlink()
+                        new_ckpt = self._best_ckpt_path / f"{self.config.task}_best_model_{self.global_step}.pt"
+                        torch.save(self.model.state_dict(), new_ckpt)
+                        self._last_best_ckpt_file = new_ckpt
+                elif self.config.patience is not None:
+                    self.steps_no_improve += self.config.val_per_steps
+                    if self.steps_no_improve >= self.config.patience:
+                        self._stop_training = True
+                        break  
 
         return total_loss / num_batches if num_batches > 0 else 0.0
 
@@ -169,9 +203,14 @@ class Trainer:
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
+        is_united = "united" in self.config.task
 
         for batch in tqdm(self.val_dataloader, desc="Validating", unit="batch"):
-            loss = self.compute_loss_fn(batch, self.model)
+            if is_united:
+                cls_loss, prompt_loss = self.compute_loss_fn(batch, self.model)
+                loss = self.config.prompt_alpha * prompt_loss + (1 - self.config.prompt_alpha) * cls_loss
+            else:
+                loss = self.compute_loss_fn(batch, self.model)
             total_loss += loss.item()
             num_batches += 1
         return total_loss / num_batches if num_batches > 0 else 0.0
@@ -182,17 +221,20 @@ class Trainer:
             train_loss = self.train_epoch()
             self.train_losses.append(train_loss)
 
-            epoch_log: Dict[str, Any] = {"train/epoch_loss": train_loss, "epoch": epoch + 1}
+            task = self.config.task
+            epoch_log: Dict[str, Any] = {f"{task}/epoch_loss": train_loss, "epoch": epoch + 1}
 
             if self.val_dataloader and self.config.val_per_steps is None:
                 val_loss = self.evaluate()
                 self.val_losses.append(val_loss)
-                epoch_log["val/loss"] = val_loss
+                epoch_log[f"{task}/val_loss"] = val_loss
 
             if self.config.use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
-                wandb.log(epoch_log, step=self.global_step)
+                try:
+                    wandb.log(epoch_log, step=self.global_step)
+                except Exception as e:
+                    tqdm.write(f"[wandb] epoch log failed: {e}")
 
-            # 检查 step 级早停是否已触发
             if self._stop_training:
                 tqdm.write(f"[Early Stopping] Training stopped at epoch {epoch + 1}.")
                 break
@@ -200,15 +242,31 @@ class Trainer:
         return {"train_losses": self.train_losses, "val_losses": self.val_losses}
 
 
+
+    
 def compute_qa_loss(
     batch: Dict[str, torch.Tensor], model: nn.Module, device: str = "cuda"
 ) -> torch.Tensor:
-    input_ids = batch["input_ids"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
-    labels = batch["labels"].to(device)
-    logits = model(input_ids, attention_mask)
-    return cross_entropy(logits, labels)
+    # --- Classification loss ---
+    classification_input_ids       = batch["classification_input_ids"].to(device)       
+    classification_attention_masks = batch["classification_attention_masks"].to(device)  
+    classification_labels          = batch["classification_labels"].to(device)         
+    classification_logits = model(classification_input_ids, classification_attention_masks) 
+    classification_loss = cross_entropy(classification_logits, classification_labels)
+
+    prompting_input_ids = batch["prompting_input_ids"].to(device)   
+    prompting_labels    = batch["prompting_labels"].to(device)       
+    prompting_logits    = model.transformer(prompting_input_ids)     
+    batch_size, seq_len, vocab_size = prompting_logits.shape
+
+    seq_lengths = (prompting_input_ids != 0).sum(dim=1) - 1         
+    batch_idx   = torch.arange(batch_size, device=device)
+    last_logits = prompting_logits[batch_idx, seq_lengths]           
+    prompting_loss = cross_entropy(last_logits, prompting_labels)
+
+    return  classification_loss, prompting_loss
 
 
 def create_qa_loss_fn(device: str = "cuda") -> Callable:
     return lambda batch, model: compute_qa_loss(batch, model, device)
+

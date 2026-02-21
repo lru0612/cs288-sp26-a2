@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import regex as re
 from typing import Iterator
-from tqdm import tqdm
 
 
 class Tokenizer:
@@ -171,13 +170,12 @@ class Tokenizer:
                         ids.append(self.inverse_vocab[byte])
         return ids
 
-    def encode(self, text: str, show_progress: bool = True) -> list[int]:
+    def encode(self, text: str) -> list[int]:
         """
         Encode a string to a list of token IDs.
 
         Args:
             text: Input string to encode
-            show_progress: Whether to show a tqdm progress bar
 
         Returns:
             List of token IDs
@@ -190,14 +188,7 @@ class Tokenizer:
         # Split by special tokens first
         parts = self._split_with_special_tokens(text)
 
-        iterator = tqdm(
-            parts,
-            desc="Tokenizing",
-            unit="chunk",
-            disable=not show_progress,
-        )
-
-        for part, is_special in iterator:
+        for part, is_special in parts:
             if is_special:
                 # Add special token ID
                 ids.append(self.special_token_ids[part])

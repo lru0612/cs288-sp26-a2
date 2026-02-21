@@ -94,10 +94,11 @@ def evaluate_qa_model(model, dataloader, device: str = "cuda") -> dict:
     with torch.no_grad():
         for batch in dataloader:
             predictions = model.predict(
-                batch["input_ids"].to(device), batch["attention_mask"].to(device)
+                batch["classification_input_ids"].to(device),
+                batch["classification_attention_masks"].to(device),
             )
             all_predictions.extend(predictions.cpu().tolist())
-            all_labels.extend(batch["labels"].cpu().tolist())
+            all_labels.extend(batch["classification_labels"].cpu().tolist())
     correct = sum(1 for p, l in zip(all_predictions, all_labels) if l >= 0 and p == l)
     total = sum(1 for l in all_labels if l >= 0)
     return {

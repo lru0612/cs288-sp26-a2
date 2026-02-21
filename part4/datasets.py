@@ -9,6 +9,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
+from tqdm import tqdm
+from part4.prompting import PromptTemplate
 
 
 class PretrainingDataset(Dataset):
@@ -154,43 +156,54 @@ class MultipleChoiceQADataset(Dataset):
         max_length: int = 256,
         num_choices: int = 4,
     ):
-        self.data = data
-        self.tokenizer = tokenizer
         self.max_length = max_length
         self.num_choices = num_choices
 
-    def __len__(self) -> int:
-        return len(self.data)
+        self._prompting_input_ids: List[List[int]] = []
+        self._prompting_labels: List[int] = []
+        self._classification_input_ids: List[List[List[int]]] = []
+        self._classification_attention_masks: List[List[List[int]]] = []
+        self._classification_labels: List[int] = []
+        template = PromptTemplate()
+        for example in tqdm(data, desc="Tokenizing QA data", leave=False):
+            context  = example["context"]
+            question = example["question"]
+            choices  = example["choices"]
+            answer   = example.get("answer", -1)
 
-    def _format_choice_input(self, context: str, question: str, choice: str) -> str:
-        return f"Context: {context}\n\nQuestion: {question}\n\nAnswer: {choice}"
+            all_ids, all_masks = [], []
+            for choice in choices:
+                text = f"Context: {context}\n\nQuestion: {question}\n\nAnswer: {choice}"
+                ids = tokenizer.encode(text)
+                if len(ids) > max_length:
+                    ids = ids[:max_length]
+                pad = max_length - len(ids)
+                all_ids.append(ids + [0] * pad)
+                all_masks.append([1] * len(ids) + [0] * pad)
+            text = template.format_with_answer(context=context, question=question, choices=choices,answer_idx=answer)
+            ids = tokenizer.encode(text[:-1])
+            if len(ids) > max_length:
+                    ids = ids[:max_length]
+            pad = max_length - len(ids)
+            self._prompting_input_ids.append(ids + [0] * pad)
+            self._prompting_labels.append(tokenizer.encode(text[-1])[0])
+            self._classification_input_ids.append(all_ids)
+            self._classification_attention_masks.append(all_masks)
+            self._classification_labels.append(answer)
+
+        print(f"QA dataset ready: {len(self._classification_labels):,} examples "
+              f"(max_length={max_length}, choices={num_choices})")
+
+    def __len__(self) -> int:
+        return len(self._classification_labels)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        example = self.data[idx]
-        context = example["context"]
-        question = example["question"]
-        choices = example["choices"]
-        answer = example.get("answer", -1)
-
-        all_input_ids = []
-        all_attention_masks = []
-
-        for choice in choices:
-            text = self._format_choice_input(context, question, choice)
-            token_ids = self.tokenizer.encode(text)
-            if len(token_ids) > self.max_length:
-                token_ids = token_ids[: self.max_length]
-            attention_mask = [1] * len(token_ids)
-            padding_length = self.max_length - len(token_ids)
-            token_ids = token_ids + [0] * padding_length
-            attention_mask = attention_mask + [0] * padding_length
-            all_input_ids.append(token_ids)
-            all_attention_masks.append(attention_mask)
-
         return {
-            "input_ids": torch.tensor(all_input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(all_attention_masks, dtype=torch.long),
-            "labels": torch.tensor(answer, dtype=torch.long),
+            "prompting_input_ids":            torch.tensor(self._prompting_input_ids[idx],            dtype=torch.long),
+            "prompting_labels":               torch.tensor(self._prompting_labels[idx],               dtype=torch.long),
+            "classification_input_ids":       torch.tensor(self._classification_input_ids[idx],       dtype=torch.long),
+            "classification_attention_masks": torch.tensor(self._classification_attention_masks[idx], dtype=torch.long),
+            "classification_labels":          torch.tensor(self._classification_labels[idx],          dtype=torch.long),
         }
 
     @classmethod
@@ -229,7 +242,7 @@ def create_qa_dataloader(
     max_length=256,
     num_choices=4,
     shuffle=True,
-    num_workers=0,
+    num_workers=4,
 ):
     if isinstance(data, (str, Path)):
         dataset = MultipleChoiceQADataset.from_json(
@@ -245,4 +258,5 @@ def create_qa_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=num_workers > 0,
     )

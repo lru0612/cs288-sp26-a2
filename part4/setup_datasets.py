@@ -53,6 +53,9 @@ def download_tinystories():
 
     # Save as text file with <|endoftext|> separator
     output_path = FIXTURES_DIR / "tinystories_full.txt"
+    if output_path.exists():
+        print(f"Found existing file, skipping download.")
+        return output_path
 
     with open(output_path, "w", encoding="utf-8") as f:
         for i, example in enumerate(dataset):
@@ -296,11 +299,11 @@ def main():
     )
     parser.add_argument(
         "--wiki-train", type=int, default=100000,
-        help="Number of Wikipedia articles for training (default: 100000)"
+        help="Number of Wikipedia articles for training"
     )
     parser.add_argument(
         "--wiki-val", type=int, default=1000,
-        help="Number of Wikipedia articles for validation (default: 5000)"
+        help="Number of Wikipedia articles for validation"
     )
     args = parser.parse_args()
 
@@ -320,7 +323,7 @@ def main():
         )
 
     # Download SQuAD
-    squad_paths = download_squad()
+    # squad_paths = download_squad()
 
     print("\n" + "=" * 60)
     print("SETUP COMPLETE")
