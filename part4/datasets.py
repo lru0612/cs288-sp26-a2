@@ -5,12 +5,13 @@ Example submission.
 
 import json
 import pickle
+import random
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
-from part4.prompting import PromptTemplate
+from part4.prompting import PromptTemplate, FewShotPromptingPipeline
 
 
 class PretrainingDataset(Dataset):
@@ -213,6 +214,131 @@ class MultipleChoiceQADataset(Dataset):
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls(data, tokenizer, **kwargs)
+
+
+class _PromptFormatter(FewShotPromptingPipeline):
+
+    def __init__(self, tokenizer, template, few_shot_pool, k, context_max_chars, seed):
+        self.tokenizer = tokenizer
+        self.template = template
+        self.few_shot_pool = few_shot_pool
+        self.k = k
+        self.context_max_chars = context_max_chars
+        self.max_input_tokens = 1 << 7 
+        self._rng = random.Random(seed)
+        self._setup_choice_tokens()  
+
+
+class PromptingFineTuneDataset(Dataset):
+    def __init__(
+        self,
+        data: List[Dict[str, Any]],
+        tokenizer,
+        template: Optional[PromptTemplate] = None,
+        few_shot_pool: Optional[List[Dict[str, Any]]] = None,
+        beta: float = 0.5,
+        k: int = 2,
+        context_max_chars: int = 200,
+        max_length: int = 512,
+        seed: int = 42,
+    ):
+        template = template or PromptTemplate("basic")
+        few_shot_pool = few_shot_pool or []
+
+        formatter = _PromptFormatter(
+            tokenizer=tokenizer,
+            template=template,
+            few_shot_pool=few_shot_pool,
+            k=k,
+            context_max_chars=context_max_chars,
+            seed=seed,
+        )
+
+        rng = random.Random(seed)
+        self._input_ids_list: List[List[int]] = []
+        self._seq_lens: List[int] = []
+        self._labels: List[int] = []
+
+        n_fs = 0
+        for ex in tqdm(data, desc="Building PromptingFineTuneDataset", leave=False):
+            use_few_shot = rng.random() < beta
+
+            prefix = formatter._build_prefix() if (use_few_shot and few_shot_pool and k > 0) else ""
+            if use_few_shot and few_shot_pool and k > 0:
+                n_fs += 1
+
+            ctx = ex["context"]
+            if len(ctx) > context_max_chars:
+                ctx = ctx[:context_max_chars] + "..."
+            query = template.format(ctx, ex["question"], ex["choices"])
+            prompt = prefix + query
+
+            token_ids = tokenizer.encode(prompt)
+            if len(token_ids) > max_length:
+                token_ids = token_ids[-max_length:]
+
+            seq_len = len(token_ids)
+            input_ids = token_ids + [0] * (max_length - seq_len)
+
+            answer_letter = chr(ord("A") + ex["answer"])
+            label = formatter.choice_tokens.get(
+                answer_letter, next(iter(formatter.choice_tokens.values()))
+            )
+
+            self._input_ids_list.append(input_ids)
+            self._seq_lens.append(seq_len)
+            self._labels.append(label)
+
+        print(
+            f"PromptingFineTuneDataset ready: {len(data):,} examples "
+            f"({n_fs:,} few-shot / {len(data) - n_fs:,} zero-shot, "
+            f"beta={beta}, k={k}, max_length={max_length})"
+        )
+
+    def __len__(self) -> int:
+        return len(self._input_ids_list)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        return {
+            "input_ids": torch.tensor(self._input_ids_list[idx], dtype=torch.long),
+            "seq_len":   torch.tensor(self._seq_lens[idx],        dtype=torch.long),
+            "label":     torch.tensor(self._labels[idx],          dtype=torch.long),
+        }
+
+
+def create_prompting_finetune_dataloader(
+    data: List[Dict[str, Any]],
+    tokenizer,
+    template: Optional[PromptTemplate] = None,
+    few_shot_pool: Optional[List[Dict[str, Any]]] = None,
+    beta: float = 0.5,
+    k: int = 2,
+    context_max_chars: int = 200,
+    max_length: int = 512,
+    seed: int = 42,
+    batch_size: int = 8,
+    shuffle: bool = True,
+    num_workers: int = 4,
+) -> DataLoader:
+    dataset = PromptingFineTuneDataset(
+        data=data,
+        tokenizer=tokenizer,
+        template=template,
+        few_shot_pool=few_shot_pool,
+        beta=beta,
+        k=k,
+        context_max_chars=context_max_chars,
+        max_length=max_length,
+        seed=seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+    )
 
 
 def create_pretraining_dataloader(

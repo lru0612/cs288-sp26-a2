@@ -94,7 +94,7 @@ class Trainer:
         if config.checkpoint_dir is not None:
             self._ckpt_dir = Path(config.checkpoint_dir)
             self._ckpt_dir.mkdir(parents=True, exist_ok=True)
-            self._best_ckpt_path = self._ckpt_dir / time.strftime("%Y%m%d_%H%M%S")
+            self._best_ckpt_path = self._ckpt_dir / f"{self.config.task}_{time.strftime('%Y%m%d_%H%M%S')}"
             os.makedirs(self._best_ckpt_path, exist_ok=True)
         else:
             self._ckpt_dir = None

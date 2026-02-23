@@ -26,8 +26,11 @@ import sys
 import tempfile
 import torch
 from pathlib import Path
-
-import wandb
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
 import time
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -37,7 +40,13 @@ from part1.tokenizer import get_tokenizer
 from part2.model import TransformerLM
 from part3.nn_utils import cross_entropy, gradient_clipping
 from torch.utils.data import DataLoader
-from part4.datasets import PretrainingDataset, ConcatPretrainingDataset, create_pretraining_dataloader, create_qa_dataloader
+from part4.datasets import (
+    PretrainingDataset,
+    ConcatPretrainingDataset,
+    create_pretraining_dataloader,
+    create_qa_dataloader,
+    create_prompting_finetune_dataloader,
+)
 from part4.sampling import generate_text
 from part4.qa_model import TransformerForMultipleChoice, evaluate_qa_model
 from part4.prompting import PromptTemplate, PromptingPipeline, FewShotPromptingPipeline, evaluate_prompting
@@ -69,14 +78,24 @@ CONFIGS = {
         "d_ff": 2048,
         "context_length": 512,
         "pretrain_epochs": 4,
-        "finetune_epochs": 5,
         "pretrain_batch_size": 32,
-        "finetune_batch_size": 8,
         "val_per_steps": 1000,
-        "pretrain_patience": 5000,   
-        "finetune_val_per_steps": 200,  
-        "finetune_patience": 1000,      
-        "lr": 2e-4,
+        "pretrain_patience": 5000,
+        "pretrain_lr": 2e-4,
+        # finetune
+        "finetune_lr":8e-6,
+        "finetune_epochs": 1,
+        "finetune_batch_size": 8,
+        "finetune_val_per_steps": 200,
+        "finetune_patience": 800,
+        # Prompting
+        "prompting_lr": 1.5e-5,
+        "prompting_finetune_epochs": 5,
+        "prompting_batch_size":32,
+        "prompting_finetune_val_per_steps": 100,
+        "prompting_finetune_patience": 800,
+        "prompting_finetune_beta": 0,   
+        "prompting_finetune_k": 0,         
     }
 
 
@@ -180,6 +199,7 @@ def pretrain_lm(
     config: dict,
     device: str = "cpu",
     use_wandb: bool = False,
+    wandb_project: str = "cs288-proj2",
 ) -> TransformerLM:
     """
     Pretrain a Transformer language model on TinyStories.
@@ -198,6 +218,15 @@ def pretrain_lm(
     print("\n" + "=" * 60)
     print("STEP 2: Pretraining Language Model")
     print("=" * 60)
+
+    if use_wandb and _WANDB_AVAILABLE:
+        wandb.init(
+            project=wandb_project,
+            name=f"pretrain-{time.strftime('%Y%m%d-%H%M')}",
+            config={k: v for k, v in config.items()
+                    if k not in ("pretrain_data", "pretrain_val_data", "qa_train", "qa_dev")},
+            reinit=True,
+        )
 
     # Create model
     model = TransformerLM(
@@ -300,6 +329,9 @@ def pretrain_lm(
         )
         print(f"  '{prompt}' -> '{generated[:80]}...'")
 
+    if use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
+        wandb.finish()
+
     return model
 
 
@@ -381,6 +413,7 @@ def finetune_qa(
     config: dict,
     device: str = "cpu",
     use_wandb: bool = False,
+    wandb_project: str = "cs288-proj2",
 ) -> TransformerForMultipleChoice:
     """
     Fine-tune the pretrained model for multiple-choice QA.
@@ -400,6 +433,15 @@ def finetune_qa(
     print("\n" + "=" * 60)
     print("STEP 3: Fine-tuning for Multiple-Choice QA")
     print("=" * 60)
+
+    if use_wandb and _WANDB_AVAILABLE:
+        wandb.init(
+            project=wandb_project,
+            name=f"finetune-{time.strftime('%Y%m%d-%H%M')}",
+            config={k: v for k, v in config.items()
+                    if k not in ("pretrain_data", "pretrain_val_data", "qa_train", "qa_dev")},
+            reinit=True,
+        )
 
     # Create QA model (wraps the LM with a classification head)
     qa_model = TransformerForMultipleChoice(
@@ -437,7 +479,7 @@ def finetune_qa(
     # Training config
     train_config = TrainingConfig(
         num_epochs=config["finetune_epochs"],
-        learning_rate=config["lr"] / 20,  # Lower LR for fine-tuning
+        learning_rate=config["finetune_lr"],  # Lower LR for fine-tuning
         weight_decay=0.01,
         warmup_steps=min(50, len(train_dataloader) // 5),
         max_grad_norm=1.0,
@@ -469,14 +511,15 @@ def finetune_qa(
     torch.save(qa_model.state_dict(), finetune_ckpt)
     print(f"\nFine-tuned QA model saved to {finetune_ckpt}")
 
+    if use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
+        wandb.finish()
+
     return qa_model
 
 
 # =============================================================================
 # Step 5: Evaluate Fine-tuned Model
 # =============================================================================
-
-
 def evaluate_finetuned(
     qa_model: TransformerForMultipleChoice,
     tokenizer,
@@ -524,6 +567,117 @@ def evaluate_finetuned(
 
 
 # =============================================================================
+# Step 3.5: Prompting Fine-tune
+# =============================================================================
+def prompting_finetune_qa(
+    pretrained_model: TransformerLM,
+    tokenizer,
+    config: dict,
+    device: str = "cpu",
+    beta: float = 0.5,
+    k: int = 2,
+    use_wandb: bool = False,
+    wandb_project: str = "cs288-proj2",
+) -> TransformerLM:
+    print("\n" + "=" * 60)
+    print("STEP 3.5: Prompting Fine-tuning (LM backbone only)")
+    print("=" * 60)
+    print(f"  beta={beta}  (few-shot fraction), k={k} (demonstrations)")
+
+    if use_wandb and _WANDB_AVAILABLE:
+        wandb.init(
+            project=wandb_project,
+            name=f"prompting-finetune-{time.strftime('%Y%m%d-%H%M')}",
+            config={
+                **{k_: v for k_, v in config.items()
+                   if k_ not in ("pretrain_data", "pretrain_val_data", "qa_train", "qa_dev")},
+                "beta": beta,
+                "k": k,
+            },
+            reinit=True,
+        )
+
+    model = pretrained_model.to(device)
+
+    # Load QA data
+    with open(config["qa_train"]) as f:
+        train_data = json.load(f)
+    with open(config["qa_dev"]) as f:
+        dev_data = json.load(f)
+
+    template = PromptTemplate(template_name="basic")
+    _shared_kwargs = dict(
+        tokenizer=tokenizer,
+        template=template,
+        few_shot_pool=train_data,
+        beta=beta,
+        k=k,
+        context_max_chars=200,
+        max_length=config["context_length"],
+        batch_size=config["prompting_batch_size"],
+        num_workers=4,
+    )
+
+    train_dataloader = create_prompting_finetune_dataloader(
+        data=train_data, seed=42, shuffle=True, **_shared_kwargs
+    )
+    val_dataloader = create_prompting_finetune_dataloader(
+        data=dev_data, seed=0, shuffle=False, **_shared_kwargs
+    )
+
+    def _prompting_ft_loss(batch, mdl):
+        input_ids = batch["input_ids"].to(device)  
+        seq_lens  = batch["seq_len"].to(device)    
+        labels    = batch["label"].to(device)       
+        logits    = mdl(input_ids)                  
+        batch_size = input_ids.shape[0]
+        last_pos   = seq_lens - 1                   
+        batch_idx  = torch.arange(batch_size, device=device)
+        last_logits = logits[batch_idx, last_pos]  
+        return cross_entropy(last_logits, labels)
+
+    train_config = TrainingConfig(
+        num_epochs=config.get("prompting_finetune_epochs", 3),
+        learning_rate=config["prompting_lr"],
+        weight_decay=0.01,
+        warmup_steps=min(50, len(train_dataloader) // 5),
+        max_grad_norm=1.0,
+        device=device,
+        log_interval=max(1, len(train_dataloader) // 5),
+        use_amp=device == "cuda",
+        val_per_steps=config.get("prompting_finetune_val_per_steps"),
+        patience=config.get("prompting_finetune_patience"),
+        use_wandb=use_wandb,
+        task="prompting_finetune",
+    )
+
+    trainer = Trainer(
+        model=model,
+        config=train_config,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        compute_loss_fn=_prompting_ft_loss,
+    )
+
+    print(f"\nFine-tuning for {train_config.num_epochs} epoch(s)...")
+    results = trainer.train()
+    for epoch, loss in enumerate(results["train_losses"]):
+        print(f"  Epoch {epoch + 1}: loss = {loss:.4f}")
+
+    models_dir = Path(__file__).parent / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%m%d-%H%M")
+    ckpt = models_dir / f"prompting_finetuned_{ts}.pt"
+    torch.save(model.state_dict(), ckpt)
+    print(f"\nPrompting fine-tuned model saved to {ckpt}")
+
+    if use_wandb and _WANDB_AVAILABLE and wandb.run is not None:
+        wandb.finish()
+
+    return model
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -541,27 +695,8 @@ def main():
 
     config = CONFIGS
     config_name = "myown"
-    use_wandb=True
-    if use_wandb:
-        pretrain_data = config["pretrain_data"]
-        pretrain_data_str = (
-            [str(p) for p in pretrain_data]
-            if isinstance(pretrain_data, list)
-            else str(pretrain_data)
-        )
-        wandb.init(
-                project="cs288-proj2",
-                name=f"MyLM-{time.strftime('%Y%m%d-%H%M')}",
-                config={
-                    **{k: v for k, v in config.items()
-                       if k not in ("pretrain_data", "pretrain_val_data", "qa_train", "qa_dev")},
-                    "pretrain_data": pretrain_data_str,
-                    "qa_train": str(config["qa_train"]),
-                    "qa_dev": str(config["qa_dev"]),
-                    "config_name": config_name,
-                },
-            )
-        print(f"W&B run initialized: {wandb.run.url}")
+    use_wandb = True
+    wandb_project = "cs288-proj2"
 
 
     # Device
@@ -593,15 +728,16 @@ def main():
         ).to(device)
         pretrained_model.load_state_dict(torch.load(pretrained_model_path))
     else:
-        pretrained_model = pretrain_lm(tokenizer, config, device, use_wandb=use_wandb)
+        pretrained_model = pretrain_lm(tokenizer, config, device, use_wandb=use_wandb, wandb_project=wandb_project)
         
 
     if device == "cuda":
         torch.cuda.empty_cache()
 
     # Step 3: Fine-tune for QA
-    finetune_model_path = Path(__file__).parent / "checkpoints/20260221_055426_alpha0.5/united_finetune_best_model_3600.pt"
-    #finetune_model_path = None
+    #finetune_model_path = Path(__file__).parent / "checkpoints/20260221_055426_alpha0.5/united_finetune_best_model_3600.pt"
+    #finetune_model_path = Path("/root/cs288-sp26-a2/part4/checkpoints/united_finetune_20260223_073252/united_finetune_best_model_1200.pt")
+    finetune_model_path= None
     if finetune_model_path is not None and finetune_model_path.exists():
         qa_model = TransformerForMultipleChoice(
             transformer_lm=pretrained_model,
@@ -615,30 +751,74 @@ def main():
         qa_model.eval()
         print(f"Fine-tuned model loaded! ({sum(p.numel() for p in qa_model.parameters()):,} params)")
     else:
-        qa_model = finetune_qa(pretrained_model, tokenizer, config, device, use_wandb=use_wandb)
+        qa_model = finetune_qa(pretrained_model, tokenizer, config, device, use_wandb=use_wandb, wandb_project=wandb_project)
 
-    # Step 4: Evaluate prompting on fine-tuned model
-    # Use the fine-tuned backbone (qa_model.transformer) for prompting
+    # Step 4: Evaluate classification head on DEV set
+    finetuned_results = evaluate_finetuned(qa_model, tokenizer, config, device)
+    evaluate_prompting( qa_model.transformer, tokenizer, config["qa_dev"], device)
+    output_dir = Path(__file__).parent / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    finetuned_path = output_dir / "finetuned_predictions.json"
+    with open(finetuned_path, "w") as f:
+        json.dump({
+            "predictions": finetuned_results.get("predictions", []),
+            "accuracy": finetuned_results["accuracy"],
+            "config": config_name,
+        }, f, indent=2)
+    print(f"Finetuned predictions saved to {finetuned_path}")
+
+    # Step 4.5: Prompting fine-tune — directly on qa_model.transformer (no copy needed)
+    # prompting_model_path="/root/cs288-sp26-a2/part4/checkpoints/20260223_043049/prompting_finetune_best_model_600.pt"
+    # prompting_model_path=Path(prompting_model_path)
+    prompting_model_path=None
+    if prompting_model_path is not None and prompting_model_path.exists():
+        qa_model.transformer=TransformerLM(
+            vocab_size=len(tokenizer.vocab),
+            context_length=config["context_length"],
+            d_model=config["d_model"],
+            num_layers=config["num_layers"],
+            num_heads=config["num_heads"],
+            d_ff=config["d_ff"],
+        ).to(device)
+        qa_model.transformer.load_state_dict(torch.load(prompting_model_path))
+    else: 
+        prompting_finetune_qa(
+            pretrained_model=qa_model.transformer,
+            tokenizer=tokenizer,
+            config=config,
+            device=device,
+            beta=config.get("prompting_finetune_beta", 0.5),
+            k=config.get("prompting_finetune_k", 2),
+            use_wandb=use_wandb,
+            wandb_project=wandb_project,
+    )
+
+    # Step 5: Evaluate prompting on DEV set (backbone now prompting-fine-tuned)
     prompting_results = evaluate_prompting(
         qa_model.transformer, tokenizer, config["qa_dev"], device
     )
 
-    # Step 5: Evaluate fine-tuned model (classification head)
-    finetuned_results = evaluate_finetuned(qa_model, tokenizer, config, device)
+    prompting_path = output_dir / "prompting_predictions.json"
+    with open(prompting_path, "w") as f:
+        json.dump({
+            "predictions": prompting_results.get("predictions", []),
+            "accuracy": prompting_results["accuracy"],
+            "config": config_name,
+        }, f, indent=2)
+    print(f"Prompting predictions saved to {prompting_path}")
 
-    # Summary
+    # Summary (DEV set as reference)
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
     print(
         f"Model parameters: {sum(p.numel() for p in pretrained_model.parameters()):,}"
     )
-    print(f"\nResults (both on fine-tuned model):")
+    print(f"\nResults on DEV set (for reference):")
     print(f"  Prompting approach:    {prompting_results['accuracy']:.2%}")
     print(f"  Classification head:   {finetuned_results['accuracy']:.2%}")
     print(f"  Random baseline:       25.00%")
 
-    # Calculate improvement (prompting should beat finetuned for full prompting score)
     prompting_boost = prompting_results["accuracy"] - finetuned_results["accuracy"]
     print(f"\n  Prompting boost over fine-tuned: {prompting_boost:+.2%}")
     if prompting_boost >= 0.04:
@@ -648,37 +828,13 @@ def main():
     else:
         print(f"  (Prompting should beat fine-tuned model)")
 
-    # Save predictions to JSON files for grading
-    output_dir = Path(__file__).parent / "outputs"
-    output_dir.mkdir(exist_ok=True)
-
-    # Save fine-tuned predictions
-    finetuned_output = {
-        "predictions": finetuned_results.get("predictions", []),
-        "accuracy": finetuned_results["accuracy"],
-        "config": config_name,
-    }
-    finetuned_path = output_dir / "finetuned_predictions.json"
-    with open(finetuned_path, "w") as f:
-        json.dump(finetuned_output, f, indent=2)
-
-    # Save prompting predictions
-    prompting_output = {
-        "predictions": prompting_results.get("predictions", []),
-        "accuracy": prompting_results["accuracy"],
-        "config": config_name,
-    }
-    prompting_path = output_dir / "prompting_predictions.json"
-    with open(prompting_path, "w") as f:
-        json.dump(prompting_output, f, indent=2)
-
-    print(f"\nPredictions saved to:")
+    print(f"\nPredictions saved (TEST SET) to:")
     print(f"  {finetuned_path}")
     print(f"  {prompting_path}")
 
-    # Print grading info
+    # Estimated grading (based on DEV set)
     print("\n" + "=" * 60)
-    print("GRADING RUBRIC")
+    print("GRADING RUBRIC (estimated from dev set)")
     print("=" * 60)
     finetuned_score = max(0, min(1, (finetuned_results["accuracy"] - 0.30) / 0.20))
     prompting_score = (
@@ -691,19 +847,6 @@ def main():
     print(f"Total Part 4:      {total_score:.0%}")
 
     print("\nDone!")
-
-    if use_wandb:
-        wandb.log(
-                {
-                    "eval/finetuned_accuracy": finetuned_results["accuracy"],
-                    "eval/prompting_accuracy": prompting_results["accuracy"],
-                    "eval/prompting_boost": prompting_boost,
-                    "eval/finetuned_score": finetuned_score,
-                    "eval/prompting_score": prompting_score,
-                    "eval/total_score": total_score,
-                }
-            )
-        wandb.finish()
 
 
 if __name__ == "__main__":
